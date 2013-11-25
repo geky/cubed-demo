@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+	<title>Cubed</title>
+	
+	<script type="text/javascript" src="cubedrenderer.js"></script>
+	
+	<script type="text/javascript" src="cubetree.js"></script>
+	
+	<script type="text/javascript" src="ui.js"></script>
+	
+	<script type="text/javascript" src="/webgl-utils.js"></script>
+
+	<script type="text/javascript" src="/gl-matrix-min.js"></script>
+
+	<script type="text/javascript">
+		
+	var gl;
+	var canvas;
+
+	var treeBuffer;
+	
+	var texture;
+	
+	var pMatrix = mat4.create();
+	var mMatrix = mat4.create();
+	var light = vec3.create([0.0,0.0,1.0]);
+
+	var rotMatrix = mat4.identity(mat4.create());
+	var lastTime = 0;
+	var avgFPS = 0;
+	var bufferTime; //used for debug
+	var renderTime;
+	var avgRenderTime = 0;
+	var zoom  = 20.0;
+	
+	var octree;
+
+	function webGLStart() {
+		
+		canvas = document.getElementById("CubedCanvas");
+
+		try {
+			gl = canvas.getContext("experimental-webgl");
+		} catch (e) {}
+		
+		if (!gl) {
+			window.location.href = "nowebgl.html";
+		}
+		
+		ui.init();
+		octree = hashHandler.getOctree();
+		cookieHandler.getSettings();
+		
+		initShaders();
+		initBuffers();
+		initTextures();
+		
+		lastTime = new Date().getTime();
+		
+		gl.clearColor(0.128, 0.128, 0.128, 1.0);
+		gl.enable(gl.DEPTH_TEST);
+		gl.enable(gl.CULL_FACE);
+
+		tick();
+	}
+
+	function initTextures() {
+		texture = gl.createTexture();
+		texture.image = new Image();
+		texture.image.onload = function() {
+			texSize = 1.0/(texture.image.width/texture.image.height);
+		
+			gl.bindTexture(gl.TEXTURE_2D, texture);
+			gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texture.image);
+			gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+			gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+		}
+
+		texture.image.src = "CubeTextures.png";
+	}
+	
+	function initBuffers() {
+		treeBuffer = gl.createBuffer();
+		updateBuffers();
+	}
+	
+	function updateBuffers() {
+		bufferTime = new Date().getTime();
+	
+		hashHandler.setHash(octree);
+	
+		var data = new Array();
+		octree.makeDisplay(data,0,0,0,octree.depth);
+
+		treeBuffer.size = data.length;
+		gl.bindBuffer(gl.ARRAY_BUFFER, treeBuffer);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data), gl.DYNAMIC_DRAW);
+		
+		var loc = octree.center(octree.depth);
+		octree.pos = vec3.create();
+		octree.pos[0] = loc.x;
+		octree.pos[1] = loc.y;
+		octree.pos[2] = loc.z;
+		
+		octree.rad = octree.accurateRadius(loc,octree.depth);
+		
+		bufferTime = new Date().getTime() - bufferTime;
+	}
+
+	function tick() {
+		requestAnimFrame(tick);
+		
+		var timeNow = new Date().getTime();
+		var dt = (timeNow - lastTime)/1000.0;
+
+		ui.handleActions(dt);
+		drawScene(dt);
+		
+		renderTime = new Date().getTime() - timeNow;
+		avgRenderTime = (0.99*avgRenderTime) + (0.01*renderTime);
+		lastTime = timeNow;
+	}
+	
+	function setMatrices() {
+		mat4.perspective(settings.fovy, gl.veiwWidth/gl.veiwHeight, settings.nearVeiw, zoom+(3*octree.rad), pMatrix);
+		
+		mat4.identity(mMatrix);8
+		mat4.translate(mMatrix, [0, 0, -(zoom+2*octree.rad)]);
+		mat4.multiply(mMatrix, rotMatrix, mMatrix);
+		mat4.translate(mMatrix, [-octree.pos[0],-octree.pos[1],-octree.pos[2]]);
+	}
+
+	function drawScene(dt) {
+		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+		gl.enable(gl.DEPTH_TEST);
+
+/*		if (!settings.veiwMode) {
+			gl.useProgram(texShader);
+		
+			gl.bindBuffer(gl.ARRAY_BUFFER, treeBuffer);
+			gl.vertexAttribPointer(texShader.position, 3, gl.FLOAT, false, 5*4, 0);
+			gl.vertexAttribPointer(texShader.texCoord, 2, gl.FLOAT, false, 5*4, 3*4);
+			
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, texture);
+			gl.uniform1i(texShader.samplerUniform, 0);
+			
+			gl.uniformMatrix4fv(texShader.pMatrixUniform, false, pMatrix);
+			gl.uniformMatrix4fv(texShader.mMatrixUniform, false, mMatrix);
+			
+			gl.drawArrays(gl.TRIANGLES, 0, treeBuffer.size/5);
+		} else if (settings.veiwMode < 4) { //>
+			gl.useProgram(colorShader);
+		
+			gl.bindBuffer(gl.ARRAY_BUFFER, treeBuffer);
+			gl.vertexAttribPointer(colorShader.position, 3, gl.FLOAT, false, 6*4, 0);
+			gl.vertexAttribPointer(colorShader.color, 3, gl.FLOAT, false, 6*4, 3*4);
+			
+			gl.uniformMatrix4fv(colorShader.pMatrixUniform, false, pMatrix);
+			gl.uniformMatrix4fv(colorShader.mMatrixUniform, false, mMatrix);
+			
+			if (settings.veiwMode == 1)
+				gl.drawArrays(gl.TRIANGLES, 0, treeBuffer.size/6);
+			else if (settings.veiwMode == 2)
+				gl.drawArrays(gl.LINE_STRIP, 0, treeBuffer.size/6);
+			else
+				gl.drawArrays(gl.POINTS, 0, treeBuffer.size/6);
+		} else {
+			gl.useProgram(fancyShader);
+		
+			gl.bindBuffer(gl.ARRAY_BUFFER, treeBuffer);
+			gl.vertexAttribPointer(fancyShader.position, 3, gl.FLOAT, false, 9*4, 0);
+			gl.vertexAttribPointer(fancyShader.color, 3, gl.FLOAT, false, 9*4, 3*4);
+			gl.vertexAttribPointer(fancyShader.normal, 3, gl.FLOAT, false, 9*4, 6*4);
+			
+			gl.uniformMatrix4fv(fancyShader.pMatrixUniform, false, pMatrix);
+			gl.uniformMatrix4fv(fancyShader.mMatrixUniform, false, mMatrix);
+			
+			var nMatrix = mat3.create();
+			mat4.toInverseMat3(mMatrix, nMatrix);
+			mat3.transpose(nMatrix);
+			gl.uniformMatrix3fv(fancyShader.nMatrixUniform, false, nMatrix);
+			
+			gl.uniform3fv(fancyShader.lightDir, light);
+			
+			gl.drawArrays(gl.TRIANGLES, 0, treeBuffer.size/9);
+		}
+*/
+		renderer.draw();
+		
+		ui.drawGui(dt);
+	}	
+	</script>
+	
+	<script type="text/javascript" src="../googlestuff.js"></script>
+</head>
+
+<body onload="webGLStart();" oncontextmenu="return false;" style="background-color:#212121; width:100%; height:100%; margin:0px; overflow:hidden;">
+	<canvas id="CubedCanvas" style="position:fixed; width:100%; height:100%;"></canvas>
+</body>
+</html>
